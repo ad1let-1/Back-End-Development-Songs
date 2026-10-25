@@ -1,53 +1,98 @@
-from . import app
-import os
+"""REST endpoints for the band's songs catalogue."""
+
 import json
-import pymongo
-from flask import jsonify, request, make_response, abort, url_for  # noqa; F401
-from pymongo import MongoClient
-from bson import json_util
-from pymongo.errors import OperationFailure
-from pymongo.results import InsertOneResult
-from bson.objectid import ObjectId
-import sys
+import os
+from pathlib import Path
 
-SITE_ROOT = os.path.realpath(os.path.dirname(__file__))
-json_url = os.path.join(SITE_ROOT, "data", "songs.json")
-songs_list: list = json.load(open(json_url))
+from flask import jsonify, request
+from pymongo import MongoClient, ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
-# client = MongoClient(
-#     f"mongodb://{app.config['MONGO_USERNAME']}:{app.config['MONGO_PASSWORD']}@localhost")
-mongodb_service = os.environ.get('MONGODB_SERVICE')
-mongodb_username = os.environ.get('MONGODB_USERNAME')
-mongodb_password = os.environ.get('MONGODB_PASSWORD')
-mongodb_port = os.environ.get('MONGODB_PORT')
-
-print(f'The value of MONGODB_SERVICE is: {mongodb_service}')
-
-if mongodb_service == None:
-    app.logger.error('Missing MongoDB server in the MONGODB_SERVICE variable')
-    # abort(500, 'Missing MongoDB server in the MONGODB_SERVICE variable')
-    sys.exit(1)
-
-if mongodb_username and mongodb_password:
-    url = f"mongodb://{mongodb_username}:{mongodb_password}@{mongodb_service}"
-else:
-    url = f"mongodb://{mongodb_service}"
+from . import app
 
 
-print(f"connecting to url: {url}")
+def create_collection():
+    service = os.environ.get("MONGODB_SERVICE")
+    if service:
+        username = os.environ.get("MONGODB_USERNAME")
+        password = os.environ.get("MONGODB_PASSWORD")
+        if username and password:
+            from urllib.parse import quote_plus
 
-try:
-    client = MongoClient(url)
-except OperationFailure as e:
-    app.logger.error(f"Authentication error: {str(e)}")
+            service = f"{quote_plus(username)}:{quote_plus(password)}@{service}"
+        client = MongoClient(f"mongodb://{service}", serverSelectionTimeoutMS=5000)
+    else:
+        # Local runs use an in-memory MongoDB-compatible collection.
+        import mongomock
 
-db = client.songs
-db.songs.drop()
-db.songs.insert_many(songs_list)
+        client = mongomock.MongoClient()
 
-def parse_json(data):
-    return json.loads(json_util.dumps(data))
+    collection = client.songs.songs
+    collection.create_index("id", unique=True)
+    if collection.count_documents({}) == 0:
+        data_path = Path(__file__).parent / "data" / "songs.json"
+        with data_path.open(encoding="utf-8") as source:
+            collection.insert_many(json.load(source))
+    return collection
 
-######################################################################
-# INSERT CODE HERE
-######################################################################
+
+songs = create_collection()
+
+
+def public_song(document):
+    if document is None:
+        return None
+    return {key: value for key, value in document.items() if key != "_id"}
+
+
+@app.get("/health")
+def health():
+    return jsonify(status="OK"), 200
+
+
+@app.get("/song")
+def get_songs():
+    return jsonify(songs=[public_song(song) for song in songs.find().sort("id", 1)]), 200
+
+
+@app.get("/song/<int:song_id>")
+def get_song(song_id):
+    song = public_song(songs.find_one({"id": song_id}))
+    if song is None:
+        return jsonify(message="Song not found"), 404
+    return jsonify(song), 200
+
+
+@app.post("/song")
+def create_song():
+    song = request.get_json(silent=True)
+    if not isinstance(song, dict) or not isinstance(song.get("id"), int):
+        return jsonify(message="A JSON song with an integer id is required"), 400
+    try:
+        songs.insert_one(song.copy())
+    except DuplicateKeyError:
+        return jsonify(message="Song already exists"), 409
+    return jsonify(public_song(song)), 201
+
+
+@app.put("/song/<int:song_id>")
+def update_song(song_id):
+    changes = request.get_json(silent=True)
+    if not isinstance(changes, dict):
+        return jsonify(message="A JSON song is required"), 400
+    changes.pop("_id", None)
+    changes["id"] = song_id
+    result = songs.find_one_and_update(
+        {"id": song_id}, {"$set": changes}, return_document=ReturnDocument.AFTER
+    )
+    if result is None:
+        return jsonify(message="Song not found"), 404
+    return jsonify(public_song(result)), 201
+
+
+@app.delete("/song/<int:song_id>")
+def delete_song(song_id):
+    result = songs.delete_one({"id": song_id})
+    if result.deleted_count == 0:
+        return jsonify(message="Song not found"), 404
+    return "", 204
