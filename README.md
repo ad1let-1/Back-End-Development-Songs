@@ -1,6 +1,9 @@
 # Back-End-Development-Songs
 
-Flask and MongoDB song catalogue service for Djirection. This project extends the [IBM Skills Network course template](https://github.com/ibm-developer-skills-network/hvlga-Back-End-Development-Songs), licensed under Apache 2.0. It implements the missing REST endpoints and seeds the catalogue from `backend/data/songs.json` when the collection is empty.
+This is the public README for my **Back-End-Development-Songs** repository:
+https://github.com/ad1let-1/Back-End-Development-Songs/blob/main/README.md
+
+Flask and MongoDB song catalogue service for Djirection. Based on the IBM Skills Network course template, licensed under Apache 2.0. It implements the REST endpoints and seeds the catalogue from `backend/data/songs.json` when the collection is empty.
 
 ## Run locally
 
